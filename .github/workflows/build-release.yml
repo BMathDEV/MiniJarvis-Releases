@@ -1,0 +1,112 @@
+name: Build and publish Mini Jarvis
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Tag to build from BMathDEV/MiniJarvis
+        required: true
+        default: v1.0.0
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout source tag
+        shell: pwsh
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          if ($env:SOURCE_TAG -notmatch '^v\d+\.\d+\.\d+([.-][A-Za-z0-9.-]+)?$') {
+            throw "Invalid source tag: $env:SOURCE_TAG"
+          }
+          git clone --depth 1 --branch $env:SOURCE_TAG https://github.com/BMathDEV/MiniJarvis.git source
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: source/windows/interface/pom.xml
+      - name: Build Windows app image
+        shell: pwsh
+        run: .\source\windows\interface\package.ps1
+      - name: Archive Windows app image
+        shell: pwsh
+        run: Compress-Archive -Path 'source\dist\windows\MiniJarvis' -DestinationPath 'MiniJarvis-windows.zip'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MiniJarvis-windows
+          path: MiniJarvis-windows.zip
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout source tag
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          if [[ ! "$SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "Invalid source tag: $SOURCE_TAG"
+            exit 1
+          fi
+          git clone --depth 1 --branch "$SOURCE_TAG" https://github.com/BMathDEV/MiniJarvis.git source
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: source/mac/interface/pom.xml
+      - name: Build macOS app image
+        run: sh source/mac/interface/package.sh
+      - name: Archive macOS app image
+        run: ditto -c -k --sequesterRsrc --keepParent source/dist/mac/MiniJarvis.app MiniJarvis-macos.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MiniJarvis-macos
+          path: MiniJarvis-macos.zip
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: MiniJarvis-windows
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: MiniJarvis-macos
+          path: release-assets
+      - name: Checkout source release notes
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: git clone --depth 1 --branch "$SOURCE_TAG" https://github.com/BMathDEV/MiniJarvis.git source
+      - name: Publish release in this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          NOTES_FILE="source/RELEASE_NOTES_${SOURCE_TAG}.md"
+          if [[ ! -f "$NOTES_FILE" ]]; then
+            echo "Release notes not found: $NOTES_FILE"
+            exit 1
+          fi
+          gh release create "$SOURCE_TAG" \
+            release-assets/MiniJarvis-windows.zip \
+            release-assets/MiniJarvis-macos.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Mini Jarvis $SOURCE_TAG" \
+            --notes-file "$NOTES_FILE"
